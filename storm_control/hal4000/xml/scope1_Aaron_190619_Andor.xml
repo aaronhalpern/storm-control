@@ -124,6 +124,8 @@
 	  
 	  <!-- The location of the Andor DLL. -->
 	  <andor_path type="string">C:/Program Files/Andor Solis/Drivers/</andor_path>
+      <!--<andor_path type="string">C:/Program Files/Andor Driver Pack 2/</andor_path>-->
+
 
 	  <!-- The name of the Andor DLL. -->
 	  <andor_dll type="string">atmcd64d.dll</andor_dll>

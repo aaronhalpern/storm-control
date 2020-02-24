@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<recipe>
+
+<command_sequence>
+  <loop name = "Movie Loop" increment = "name">
+
+    <!-- Set lock target -->
+    <movie>
+       <name increment="Yes">movie</name>
+       <length>75000</length>
+       <parameters>Ham_128x128_25Hz_bin2</parameters>
+       <variable_entry name = "Movie Loop" />
+    </movie>
+
+	<!-- Clear warnings-->
+    <clear_warnings/>
+	
+  </loop>
+
+</command_sequence>
+
+<loop_variable name = "Movie Loop">
+   <!-- No stage movement test -->
+   <value><lock_target>1.333</lock_target></value>
+   <value><lock_target>1.666</lock_target></value>
+   <value><lock_target>2.000</lock_target></value>
+   <value><lock_target>2.333</lock_target></value>
+   <value><lock_target>2.666</lock_target></value>
+   <value><lock_target>3.000</lock_target></value>
+   <!-- Stage movement -->
+</loop_variable>
+
+</recipe>
