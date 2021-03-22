@@ -11,8 +11,35 @@ from PyQt5 import QtCore
 
 import storm_control.hal4000.halLib.halMessage as halMessage
 
+import storm_control.sc_hardware.baseClasses.hardwareModule as hardwareModule
 import storm_control.sc_hardware.baseClasses.stageModule as stageModule
 import storm_control.sc_hardware.marzhauser.marzhauser as marzhauser
+
+import storm_control.sc_library.parameters as params
+
+class MarzhauserStageControl(object):
+    """
+    Control of MarzhauserStage
+    """
+    def __init__(self, stage = None, stage_functionality = None, configuration = None, **kwds):
+        super().__init__(**kwds)
+        self.stage = stage
+        self.stage_functionality = stage_functionality
+
+        # Create parameters
+        self.parameters = params.StormXMLObject()
+
+        self.parameters.add(params.ParameterSetBoolean(description = "Joystick Enabled?",
+                                                       name = "joystick",
+                                                       value = True))
+
+        self.parameters.add(params.ParameterSetBoolean(description = "Stage position polling?",
+                                                       name = "polling",
+                                                       value = True))
+
+        self.newParameters(self.parameters, initialization = True)
+
+    
 
 
 class MarzhauserStageFunctionality(stageModule.StageFunctionality):
@@ -29,7 +56,10 @@ class MarzhauserStageFunctionality(stageModule.StageFunctionality):
         # current position.
         self.updateTimer = QtCore.QTimer()
         self.updateTimer.setInterval(update_interval)
-        self.updateTimer.setSingleShot(True)
+        
+        # Disable the single shot timing
+        #self.updateTimer.setSingleShot(True)
+        
         self.updateTimer.timeout.connect(self.handleUpdateTimer)
         self.updateTimer.start()
 
@@ -166,6 +196,7 @@ class MarzhauserStage(stageModule.StageModule):
         configuration = module_params.get("configuration")
         self.stage = marzhauser.MarzhauserRS232(baudrate = configuration.get("baudrate"),
                                                 port = configuration.get("port"))
+        
         if self.stage.getStatus():
 
             # Set (maximum) stage velocity.
@@ -174,6 +205,117 @@ class MarzhauserStage(stageModule.StageModule):
             self.stage_functionality = MarzhauserStageFunctionality(device_mutex = QtCore.QMutex(),
                                                                     stage = self.stage,
                                                                     update_interval = 500)
+            # Create parameters
+            self.parameters = params.StormXMLObject()
+
+            self.parameters.add(params.ParameterSetBoolean(description = "Joystick Enabled?",
+                                                           name = "joystick",
+                                                           value = True))
+
+            self.parameters.add(params.ParameterSetBoolean(description = "Stage position polling?",
+                                                           name = "polling",
+                                                           value = True))
+
+            self.newParameters(self.parameters, initialization = True)
 
         else:
             self.stage = None
+            
+    def getParameters(self):
+            return self.parameters
+    
+    def newParameters(self, parameters, initialization = False):
+
+        if initialization:
+            changed_p_names = parameters.getAttrs()
+        else:
+            changed_p_names = params.difference(parameters, self.parameters)
+
+        p = parameters
+        for pname in changed_p_names:
+
+            # Update our current parameters.
+            self.parameters.setv(pname, p.get(pname))
+
+            # Enable or disable joystick.
+            if (pname == "joystick"):
+                #print('set the joystick to ' + str(p.get("joystick")))
+                self.stage_functionality.mustRun(task = self.stage.joystickOnOff,
+                                         args = [p.get("joystick")])
+
+            elif (pname == "polling"):
+                #print('set the polling to ' + str(p.get("polling")))
+                if p.get("polling"):
+                    self.stage_functionality.polling_thread.startPolling()
+                else:
+                    self.stage_functionality.polling_thread.stopPolling()
+
+            else:
+                print(">> Warning", str(pname), " is not a valid parameter for the marzhauser stage")
+
+
+    def processMessage(self, message):
+        if self.stage is None:
+            return
+
+        if message.isType("configuration"):
+            if message.sourceIs("tcp_control"):
+                self.tcpConnection(message.getData()["properties"]["connected"])
+
+            elif message.sourceIs("mosaic"):
+                self.pixelSize(message.getData()["properties"]["pixel_size"])
+        
+        # send our parameters to HAL?
+        if message.isType("configure1"):
+            self.sendMessage(halMessage.HalMessage(m_type = "initial parameters",
+                                                   data = {"parameters" : self.getParameters()}))
+                                                
+        elif message.isType("new parameters"):
+            hardwareModule.runHardwareTask(self,
+                                           message,
+                                           lambda : self.updateParameters(message))
+                                           
+        elif message.isType("get functionality"):
+            self.getFunctionality(message)
+            
+        elif message.isType("start film"):
+            self.startFilm(message)
+
+        elif message.isType("stop film"):
+            self.stopFilm(message)        
+
+        elif message.isType("tcp message"):
+            self.tcpMessage(message)                                        
+    
+    
+    def getFunctionality(self, message):
+        if (message.getData()["name"] == self.module_name):
+            message.addResponse(halMessage.HalMessageResponse(source = self.module_name,
+                                                              data = {"functionality" : self.stage_functionality}))
+
+    def updateParameters(self, message):
+        message.addResponse(halMessage.HalMessageResponse(source = self.module_name,
+                                                          data = {"old parameters" : self.getParameters().copy()}))
+        p = message.getData()["parameters"].get(self.module_name)
+        self.newParameters(p)
+        message.addResponse(halMessage.HalMessageResponse(source = self.module_name,
+                                                          data = {"new parameters" : self.getParameters()}))
+
+   
+    # do we need to remake stop to add marz_stage to the settings?
+    def stopFilm(self, message):
+        
+        if self.parameters.get('joystick'):
+            print(self.parameters.get('joystick'))
+            self.stage_functionality.mustRun(task = self.stage.joystickOnOff,
+                                            args = [True])
+                                            
+        pos_dict = self.stage_functionality.getCurrentPosition()
+        pos_string = "{0:.2f},{1:.2f}".format(pos_dict["x"], pos_dict["y"])
+        pos_param = params.ParameterCustom(name = "stage_position",
+                                           value = pos_string)
+        message.addResponse(halMessage.HalMessageResponse(source = self.module_name,
+                                                          data = {"acquisition" : [pos_param]}))
+        message.addResponse(halMessage.HalMessageResponse(source = self.module_name,
+                                                          data = {"parameters" : self.getParameters()}))
+    
