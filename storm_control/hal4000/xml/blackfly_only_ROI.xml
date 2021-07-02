@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<settings>
+  <camera1 validate="True">
+    <AcquisitionFrameRate type="float">100.0</AcquisitionFrameRate>
+    <BlackLevel type="float">1.0</BlackLevel>
+    <Gain type="float">1.0</Gain>
+    <Height type="int">128</Height>
+    <OffsetX type="int">396</OffsetX>
+    <OffsetY type="int">756</OffsetY>
+    <Width type="int">756</Width>
+    <default_max type="int">200</default_max>
+    <default_min type="int">30</default_min>
+    <exposure_time type="float">0.010001999999999999</exposure_time>
+    <extension type="string">c1</extension>
+    <flip_horizontal type="boolean">False</flip_horizontal>
+    <flip_vertical type="boolean">False</flip_vertical>
+    <fps type="float">99.97632560609648</fps>
+    <saved type="boolean">True</saved>
+    <transpose type="boolean">False</transpose>
+    <x_bin type="int">1</x_bin>
+    <x_end type="int">1439</x_end>
+    <x_pixels type="int">756</x_pixels>
+    <x_start type="int">397</x_start>
+    <y_bin type="int">1</y_bin>
+    <y_end type="int">1079</y_end>
+    <y_pixels type="int">128</y_pixels>
+    <y_start type="int">757</y_start>
+  </camera1>
+  <display00 validate="False">
+    <camera1 validate="True">
+      <center_x type="float">721.0</center_x>
+      <center_y type="float">541.0</center_y>
+      <colortable type="string">ramp.ctbl</colortable>
+      <display_max type="int">2186</display_max>
+      <display_min type="int">9</display_min>
+      <initialized type="boolean">True</initialized>
+      <scale type="int">-2</scale>
+      <sync type="int">0</sync>
+    </camera1>
+    <feed_name type="string">camera1</feed_name>
+  </display00>
+  <film validate="False">
+    <acq_mode type="string">fixed_length</acq_mode>
+    <auto_increment type="boolean">True</auto_increment>
+    <auto_shutters type="boolean">True</auto_shutters>
+    <extension type="string"/>
+    <filename type="string">movie</filename>
+    <filetype type="string">.dax</filetype>
+    <frames type="int">10</frames>
+    <want_bell type="boolean">True</want_bell>
+  </film>
+  <mosaic validate="False">
+    <flip_horizontal type="boolean">False</flip_horizontal>
+    <flip_vertical type="boolean">False</flip_vertical>
+    <obj1 type="custom">60x,0.120,0.0,0.0</obj1>
+    <objective type="string">obj1</objective>
+    <transpose type="boolean">False</transpose>
+  </mosaic>
+  <timing validate="True">
+    <time_base type="string">camera1</time_base>
+  </timing>
+</settings>

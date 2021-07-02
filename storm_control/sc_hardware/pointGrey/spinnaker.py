@@ -14,7 +14,7 @@ Jeff 08/20
 
 import numpy
 import os
-import PySpin
+from PySpin import PySpin
 
 
 # Global variables.
@@ -361,11 +361,14 @@ class SpinImageEventHandler(SpinImageEventClass):
         #
         image_converted = image.Convert(PySpin.PixelFormat_Mono16, PySpin.NO_COLOR_PROCESSING)
 
+        #numpy.save(r'C:\Users\STORM1\Desktop\focus_lock_debugging\image_converted.npy',image_converted)
+
         # Release original image from camera.
         image.Release()
                 
         # Print some stuff for debugging.
         if False:
+            print("\n\n----------------\nOnImageEvent\n----------------")
             print("Bits per pixel", image_converted.GetBitsPerPixel())
             print("Size in bytes", image_converted.GetImageSize())
             print("Dimensions", image_converted.GetHeight(), image.GetWidth())
@@ -553,7 +556,7 @@ if (__name__ == "__main__"):
     listCameras()
 
     # Get a camera.
-    cam = getCamera("17491681")
+    cam = getCamera("20407426")
 
     # Print all the camera properties and their values.
     if False:
@@ -563,18 +566,18 @@ if (__name__ == "__main__"):
     if True:
         pnames = ["DeviceModelName",
                   "AcquisitionFrameRate",
-                  "AcquisitionFrameRateAuto",
+                  #"AcquisitionFrameRateAuto",
                   "BlackLevel",
                   "BlackLevelClampingEnable",
                   "ExposureTime",
                   "ExposureAuto",
                   "Gain",
-                  "GammaEnabled",
-                  "OnBoardColorProcessEnabled",
-                  "PixelFormat",
-                  "pgrDefectPixelCorrectionEnable",
-                  "SharpnessEnabled",
-                  "VideoMode"]        
+                  #"GammaEnabled",
+                  #"OnBoardColorProcessEnabled",
+                  "PixelFormat"]
+                  #"pgrDefectPixelCorrectionEnable",
+                  #"SharpnessEnabled",
+                  #"VideoMode"]        
         for pname in pnames:
             prop = cam.getProperty(pname)
             print(pname, prop.getValue())
@@ -584,11 +587,11 @@ if (__name__ == "__main__"):
     if True:
         
         # Set some properties of the camera.
-        cam.setProperty("VideoMode", "Mode7")
+        #cam.setProperty("VideoMode", "Mode7")
         cam.setProperty("AcquisitionMode", "Continuous")
         cam.setProperty("TriggerMode", "Off")
-        cam.setProperty("PixelFormat", "Mono12p")
-        cam.setProperty("AcquisitionFrameRateAuto", "Off")
+        cam.setProperty("PixelFormat", "Mono16")
+        #cam.setProperty("AcquisitionFrameRateAuto", "Off")
         cam.setProperty("AcquisitionFrameRate", 10.0)
         #cam.setProperty("ExposureTime", 99000.0)
         #cam.setProperty("BlackLevel", 5.0)
