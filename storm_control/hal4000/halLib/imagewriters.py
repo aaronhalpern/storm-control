@@ -10,6 +10,8 @@ import datetime
 import struct
 import tifffile
 import time
+import zarr
+from numcodecs import Blosc
 
 from PyQt5 import QtCore
 
@@ -34,7 +36,7 @@ def availableFileFormats(test_mode):
     if test_mode:
         return [".dax", ".tif", ".big.tif", ".test"]
     else:
-        return [".dax", ".tif", ".big.tif"]
+        return [".dax", ".tif", ".big.tif", ".zarr"]
 
 def createFileWriter(camera_functionality, film_settings):
     """
@@ -57,6 +59,9 @@ def createFileWriter(camera_functionality, film_settings):
                        film_settings = film_settings)
     elif (ft == ".tif"):
         return TIFFile(camera_functionality = camera_functionality,
+                       film_settings = film_settings)
+    elif (ft == ".zarr"):
+        return ZarrFile(camera_functionality = camera_functionality,
                        film_settings = film_settings)
     else:
         raise ImageWriterException("Unknown output file format '" + ft + "'")
@@ -231,6 +236,60 @@ class TIFFile(BaseFileWriter):
                       metadata = self.metadata,
                       resolution = self.resolution, 
                       contiguous = True)
+
+
+class ZarrFile(BaseFileWriter):
+    """
+    Zarr file writing class.
+    """
+    def __init__(self, **kwds):
+        super().__init__(**kwds)
+
+        self.file = zarr.open(self.filename, mode='w')
+        self.w = int(self.cam_fn.getParameter("x_pixels"))
+        self.h = int(self.cam_fn.getParameter("y_pixels"))
+        self.chunksize = 1
+
+        # perhaps film_settings could be used to set the compression type/level
+        # see this paper for recommended compression settings
+        # https://www.biorxiv.org/content/10.1101/2023.01.24.525380v1
+        self.compressor = Blosc(cname='lz4', clevel=8, shuffle=Blosc.BITSHUFFLE)
+
+    def closeWriter(self):
+        """
+        Close the file and write a very simple .inf file. All the metadata is
+        now stored in the .xml file that is saved with each recording.
+        """
+        super().closeWriter()
+
+        with open(self.basename + ".inf", "w") as inf_fp:
+            inf_fp.write("binning = 1 x 1\n")
+            inf_fp.write("data type = 16 bit integers (binary, little endian)\n")
+            inf_fp.write("frame dimensions = " + str(self.w) + " x " + str(self.h) + "\n")
+            inf_fp.write("number of frames = " + str(self.number_frames) + "\n")
+            if True:
+                inf_fp.write("x_start = 1\n")
+                inf_fp.write("x_end = " + str(self.w) + "\n")
+                inf_fp.write("y_start = 1\n")
+                inf_fp.write("y_end = " + str(self.h) + "\n")
+            inf_fp.close()
+
+    def saveFrame(self, frame):
+        image = frame.getData().reshape(1,self.h,self.w)
+        if frame.frame_number == 0:
+            self.arr = self.file.array('data',
+                                       image, 
+                                       chunks=(self.chunksize,self.h,self.w),
+                                       compressor = self.compressor,
+                                       dtype='uint16')
+            
+        # Is it useful to set different chunk sizes?
+        # such as when # files would be extreme ie lightsheet?
+ 
+        # FIXME append is a experimental feature of zarr
+        else:
+            self.arr.append(image) 
+                                
 
 
 #
