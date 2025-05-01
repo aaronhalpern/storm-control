@@ -327,6 +327,7 @@ class DACheckFocus(DaveAction):
         self.num_focus_checks = 10 # A default number of focus checks
         self.focus_scan = False # The default is to not scan for focus
         self.scan_range = False # The range to scan for focus in microns
+        self.z_center = None # The z position to scan around
         
     ## createETree
     #
@@ -385,9 +386,15 @@ class DACheckFocus(DaveAction):
         if node.find("scan_range") is not None:
             self.scan_range = float(node.find("scan_range").text)
 
+        # Add z_center if provided
+        if node.find("z_center") is not None:
+            self.z_center = float(node.find("z_center").text)
+
         message_data = {"num_focus_checks": self.num_focus_checks,
                         "focus_scan": self.focus_scan,
-                        "scan_range": self.scan_range}
+                        "scan_range": self.scan_range,
+                        "z_center": self.z_center
+                        }
         
         self.message = tcpMessage.TCPMessage(message_type = "Check Focus Lock",
                                              message_data = message_data)
