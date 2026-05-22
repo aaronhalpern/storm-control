@@ -275,6 +275,7 @@ class ZarrFile(BaseFileWriter):
             inf_fp.close()
 
     def saveFrame(self, frame):
+        super().saveFrame()
         image = frame.getData().reshape(1,self.h,self.w)
         if frame.frame_number == 0:
             self.arr = self.file.array('data',
