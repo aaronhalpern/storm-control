@@ -5,6 +5,7 @@ RS-232 interface to an ASI tiger controller.
 Hazen 05/18
 """
 import traceback
+import time
 
 import storm_control.sc_hardware.serial.RS232 as RS232
 import storm_control.sc_library.hdebug as hdebug
@@ -71,6 +72,57 @@ class Tiger(RS232.RS232):
 
     def setTTLMode(self, address, mode):
         self.commWithResp(address + "TTL X={0:0d}".format(int(mode)))
+
+    def fwCommand(self, command):
+        """
+        Send a FW-1000/TGFW command.
+
+        The Tiger filter wheel card uses the FW-1000 command set and expects
+        CR/LF termination, unlike the other Tiger cards.
+        """
+        self.tty.flush()
+        self.write(command + "\r\n")
+        return self.waitResponse(end_of_response = ">")
+
+    def fwBusyStatus(self):
+        """
+        Query FW-1000/TGFW busy status.
+
+        The '?' command is special and must not be line terminated.
+        """
+        self.tty.flush()
+        self.write("?")
+        time.sleep(self.wait_time)
+        return self.read(1)
+
+    def fwGoProtocol(self, protocol_index):
+        self.fwCommand("G{0:d}".format(int(protocol_index)))
+
+    def fwHalt(self):
+        self.fwCommand("HA")
+
+    def fwHome(self, wheel):
+        self.fwSelectWheel(wheel)
+        self.fwCommand("HO")
+
+    def fwLoadProtocol(self, wheel, positions, protocol_length = 8):
+        self.fwSelectWheel(wheel)
+        for i in range(protocol_length):
+            position = -1
+            if (i < len(positions)):
+                position = int(positions[i])
+            self.fwSetProtocolPosition(i, position)
+
+    def fwMove(self, wheel, position):
+        self.fwSelectWheel(wheel)
+        self.fwCommand("MP {0:d}".format(int(position)))
+
+    def fwSelectWheel(self, wheel):
+        self.fwCommand("FW {0:d}".format(int(wheel)))
+
+    def fwSetProtocolPosition(self, protocol_index, position):
+        self.fwCommand("P{0:d} {1:d}".format(int(protocol_index),
+                                             int(position)))
 
     def setVelocity(self, x_vel, y_vel):
         """

@@ -12,12 +12,51 @@ import storm_control.sc_library.halExceptions as halExceptions
 import storm_control.hal4000.halLib.halMessage as halMessage
 
 import storm_control.sc_hardware.baseClasses.amplitudeModule as amplitudeModule
+import storm_control.sc_hardware.baseClasses.filterWheelModule as filterWheelModule
 import storm_control.sc_hardware.baseClasses.hardwareModule as hardwareModule
 import storm_control.sc_hardware.baseClasses.stageModule as stageModule
 import storm_control.sc_hardware.baseClasses.stageZModule as stageZModule
 import storm_control.sc_hardware.baseClasses.voltageZModule as voltageZModule
 
 import storm_control.sc_hardware.appliedScientificInstrumentation.tiger as tiger
+
+
+def parseFilterNames(settings):
+    """
+    Return a dictionary mapping user-friendly filter names to positions.
+    """
+    filter_names = {}
+    if settings.has("filters"):
+        for i, filter_name in enumerate(settings.get("filters").split(",")):
+            filter_name = filter_name.strip()
+            if filter_name in filter_names:
+                raise halExceptions.HardwareException("Duplicate filter wheel filter name '" + filter_name + "'.")
+            filter_names[filter_name] = i
+    return filter_names
+
+
+def parseFilterSequence(settings):
+    """
+    Parse the optional filter wheel sequence.
+
+    The sequence may be specified as comma-separated integer positions or as
+    names from the optional comma-separated filters list.
+    """
+    if not settings.has("sequence"):
+        return None
+
+    filter_names = parseFilterNames(settings)
+    positions = []
+    for token in settings.get("sequence").split(","):
+        token = token.strip()
+        if token in filter_names:
+            positions.append(filter_names[token])
+        else:
+            try:
+                positions.append(int(token))
+            except ValueError:
+                raise halExceptions.HardwareException("Unknown filter wheel sequence entry '" + token + "'.")
+    return positions
 
 
 class TigerLEDFunctionality(amplitudeModule.AmplitudeFunctionalityBuffered):
@@ -74,6 +113,77 @@ class TigerLEDFunctionality(amplitudeModule.AmplitudeFunctionalityBuffered):
                     
     def startFilm(self, power):
         self.cur_power = power
+
+
+class TigerFilterWheelFunctionality(filterWheelModule.FilterWheelFunctionalityBuffered):
+    """
+    FW-1000/TGFW filter wheel support.
+
+    Normal HAL filter wheel changes use MP moves. During films this can preload
+    P0..P7 protocol positions so external TTL pulses on TRIG IN advance the
+    wheel without per-frame serial traffic.
+    """
+    def __init__(self,
+                 filter_wheel = None,
+                 protocol_length = 8,
+                 protocol_positions = None,
+                 restore_on_stop = True,
+                 wheel = 0,
+                 **kwds):
+        super().__init__(**kwds)
+        self.filter_wheel = filter_wheel
+        self.protocol_length = protocol_length
+        self.protocol_positions = protocol_positions
+        self.restore_on_stop = restore_on_stop
+        self.wheel = wheel
+
+        self.film_start_position = None
+
+    def checkProtocolPositions(self, positions):
+        if (len(positions) == 0):
+            raise halExceptions.HardwareException("Filter wheel protocol sequence is empty.")
+        if (len(positions) > self.protocol_length):
+            raise halExceptions.HardwareException("Filter wheel protocol sequence has more than {0:d} entries.".format(self.protocol_length))
+        for position in positions:
+            self.checkPosition(position)
+
+    def getProtocolPositions(self):
+        if self.protocol_positions is not None:
+            positions = self.protocol_positions
+        else:
+            positions = [self.current_position]
+        self.checkProtocolPositions(positions)
+        return positions
+
+    def setCurrentPosition(self, position):
+        self.checkPosition(position)
+        self.maybeRun(task = self.filter_wheel.fwMove,
+                      args = [self.wheel, position])
+        self.current_position = position
+
+    def startFilm(self):
+        positions = self.getProtocolPositions()
+        self.film_start_position = self.current_position
+
+        self.device_mutex.lock()
+        self.filter_wheel.fwHalt()
+        self.filter_wheel.fwLoadProtocol(self.wheel,
+                                         positions,
+                                         protocol_length = self.protocol_length)
+        self.filter_wheel.fwGoProtocol(0)
+        self.device_mutex.unlock()
+
+        self.current_position = positions[0]
+
+    def stopFilm(self):
+        self.device_mutex.lock()
+        self.filter_wheel.fwHalt()
+        if self.restore_on_stop and (self.film_start_position is not None):
+            self.filter_wheel.fwMove(self.wheel, self.film_start_position)
+            self.current_position = self.film_start_position
+        self.device_mutex.unlock()
+
+        self.film_start_position = None
 
 
 class TigerStageFunctionality(stageModule.StageFunctionalityNF):
@@ -173,6 +283,7 @@ class TigerController(stageModule.StageModule):
         super().__init__(**kwds)
         self.controller_mutex = QtCore.QMutex()
         self.functionalities = {}
+        self.filter_wheel_functionalities = []
 
         # These are used for the Z piezo stage.
         self.z_piezo_configuration = None
@@ -226,6 +337,19 @@ class TigerController(stageModule.StageModule):
                                                    led = self.controller)
                     self.functionalities[self.module_name + "." + dev_name] = led_fn
 
+                elif (dev_name.startswith("filter_wheel")):
+                    settings = devices.get(dev_name)
+                    protocol_positions = parseFilterSequence(settings)
+                    fw_fn = TigerFilterWheelFunctionality(device_mutex = self.controller_mutex,
+                                                         filter_wheel = self.controller,
+                                                         maximum = settings.get("maximum", 6),
+                                                         protocol_length = settings.get("protocol_length", 8),
+                                                         protocol_positions = protocol_positions,
+                                                         restore_on_stop = settings.get("restore_on_stop", True),
+                                                         wheel = settings.get("wheel", 0))
+                    self.functionalities[self.module_name + "." + dev_name] = fw_fn
+                    self.filter_wheel_functionalities.append(fw_fn)
+
                 else:
                     raise halExceptions.HardwareException("Unknown device " + str(dev_name))
 
@@ -278,18 +402,14 @@ class TigerController(stageModule.StageModule):
         elif message.isType("get functionality"):
             self.getFunctionality(message)
             
-        #
-        # The rest of the message are only relevant if we actually have a XY stage.
-        #
-        if self.stage_functionality is None:
-            return
-
         if message.isType("configuration"):
             if message.sourceIs("tcp_control"):
-                self.tcpConnection(message.getData()["properties"]["connected"])
+                if self.stage_functionality is not None:
+                    self.tcpConnection(message.getData()["properties"]["connected"])
 
             elif message.sourceIs("mosaic"):
-                self.pixelSize(message.getData()["properties"]["pixel_size"])
+                if self.stage_functionality is not None:
+                    self.pixelSize(message.getData()["properties"]["pixel_size"])
 
         elif message.isType("start film"):
             self.startFilm(message)
@@ -298,17 +418,25 @@ class TigerController(stageModule.StageModule):
             self.stopFilm(message)
             
         elif message.isType("tcp message"):
-            self.tcpMessage(message)
+            if self.stage_functionality is not None:
+                self.tcpMessage(message)
 
     def startFilm(self, message):
-        super().startFilm(message)
+        if self.stage_functionality is not None:
+            super().startFilm(message)
         #
         # Need to use runHardwareTask() here so that we can be sure that the
-        # Tiger LED controller will be in the correct state before we start
-        # filming.
+        # Tiger peripherals will be in the correct state before we start filming.
         #
-        if (message.getData()["film settings"].runShutters()):
-            hardwareModule.runHardwareTask(self, message, self.startLED)
+        if self.shouldRunFilmHardware(message):
+            hardwareModule.runHardwareTask(self, message, self.startTigerFilmHardware)
+
+    def shouldRunFilmHardware(self, message):
+        return message.getData()["film settings"].runShutters()
+
+    def startTigerFilmHardware(self):
+        self.startLED()
+        self.startFilterWheels()
 
     def startLED(self):
         #
@@ -322,10 +450,23 @@ class TigerController(stageModule.StageModule):
                     self.functionalities[fn_name].setFilmTTLMode(True)
                     set_ttl = True
                 self.functionalities[fn_name].setFilmPower()
+
+    def startFilterWheels(self):
+        for fn in self.filter_wheel_functionalities:
+            fn.startFilm()
                     
     def stopFilm(self, message):
-        super().stopFilm(message)
-        hardwareModule.runHardwareTask(self, message, self.stopLED)
+        if self.stage_functionality is not None:
+            super().stopFilm(message)
+        hardwareModule.runHardwareTask(self, message, self.stopTigerFilmHardware)
+
+    def stopTigerFilmHardware(self):
+        self.stopFilterWheels()
+        self.stopLED()
+
+    def stopFilterWheels(self):
+        for fn in self.filter_wheel_functionalities:
+            fn.stopFilm()
 
     def stopLED(self):
         for fn_name in self.functionalities:
