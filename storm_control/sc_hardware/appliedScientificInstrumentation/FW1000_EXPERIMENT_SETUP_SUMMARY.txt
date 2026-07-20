@@ -1,0 +1,348 @@
+ASI FW-1000 / TGFW Filter Wheel Integration Summary
+===================================================
+
+This note summarizes the filter wheel work and the practical experiment setup
+for using an ASI FW-1000 / Tiger TGFW filter wheel with storm-control.
+
+
+What was added
+--------------
+
+We added ASI FW-1000 / TGFW support to the existing Tiger controller
+integration.
+
+The implementation has two layers:
+
+1. Low-level serial helpers in:
+
+   storm_control/sc_hardware/appliedScientificInstrumentation/tiger.py
+
+   These helpers send FW-1000/TGFW commands with the correct TGFW command
+   terminator, "\r\n". This is important because the filter wheel card uses a
+   different command set and terminator than the rest of the Tiger controller.
+
+2. HAL filter wheel functionality in:
+
+   storm_control/sc_hardware/appliedScientificInstrumentation/tigerModule.py
+
+   This adds TigerFilterWheelFunctionality, which behaves like the existing HAL
+   filter wheel functionalities. Normal settings-file or GUI changes move the
+   wheel with serial commands. During filming, the module can preload the
+   FW-1000 protocol table so external TTL pulses advance the wheel.
+
+3. Runtime sequence handling in:
+
+   storm_control/hal4000/miscControl/filterWheel.py
+
+   The normal HAL filter wheel module now owns the user-facing filter names
+   and the editable film sequence. The sequence is a normal saved HAL
+   parameter, so it can be changed by loading a settings XML file instead of
+   editing the HAL configuration XML and restarting HAL.
+
+There is also a shorter command reference here:
+
+   storm_control/sc_hardware/appliedScientificInstrumentation/FW1000_FILTER_WHEEL_HAL.md
+
+
+Important ASI command behavior
+------------------------------
+
+The FW-1000/TGFW protocol table has only 8 entries:
+
+   P0 through P7
+
+Each P# entry stores a filter position. For example:
+
+   P0 2
+   P1 5
+   P2 1
+   P3 -1
+   P4 -1
+   P5 -1
+   P6 -1
+   P7 -1
+
+This means:
+
+   Protocol step P0 = filter position 2
+   Protocol step P1 = filter position 5
+   Protocol step P2 = filter position 1
+   P3..P7 are unused
+
+The value -1 marks an unused protocol entry. After the last valid entry, the
+controller wraps back to P0.
+
+Useful commands:
+
+   FW n       Select active wheel n, usually 0 or 1.
+   MP n       Move the selected wheel directly to filter position n.
+   P# n       Store filter position n in protocol entry P#.
+   G#         Move to protocol entry P#.
+   HA         Halt movement / stop protocol execution.
+   HO         Home the selected wheel.
+   ?          Busy query. This is special and is sent with no line terminator.
+
+The command ST starts a timed protocol using D# delays, but that is not the
+mode we are using for camera-synchronized acquisition.
+
+
+Normal HAL filter changes
+-------------------------
+
+When HAL or the settings file selects a filter, the wheel can be moved by
+serial command:
+
+   FW <wheel>
+   MP <position>
+
+For example:
+
+   FW 0
+   MP 2
+
+This selects wheel 0 and moves it to filter position 2.
+
+
+Hardware-timed protocol behavior
+--------------------------------
+
+For hardware-timed acquisition, HAL can preload the short FW-1000 protocol
+table before filming:
+
+   HA
+   FW <wheel>
+   P0 <position 0>
+   P1 <position 1>
+   ...
+   P7 -1
+   G0
+
+After G0, the filter wheel is physically at the P0 filter position and the
+controller's internal protocol pointer is aligned to P0.
+
+During the film, storm-control should not send per-frame serial filter changes.
+Instead, TTL pulses into the FW-1000/TGFW TRIG IN input advance the wheel to
+the next protocol entry.
+
+Example:
+
+   P0 2
+   P1 5
+   P2 1
+   P3 -1
+
+Then:
+
+   Film start / G0: filter 2
+   TTL pulse 1:    filter 5
+   TTL pulse 2:    filter 1
+   TTL pulse 3:    filter 2
+
+
+The 8-entry limitation
+----------------------
+
+The FW-1000/TGFW can only store P0 through P7. It cannot directly store a
+hundreds-frame arbitrary non-repeating filter sequence.
+
+This is fine for cyclic patterns like:
+
+   2,5,1,2,5,1,2,5,1,...
+
+but not enough by itself for arbitrary long schedules.
+
+
+The DAQ shutter workaround for non-cyclic experiments
+----------------------------------------------------
+
+The proposed workaround is to use the DAQ shutter system to decide when the
+filter wheel advances.
+
+Instead of connecting the filter wheel TRIG IN to a signal that pulses every
+camera frame, connect it to a DAQ digital output line controlled by the
+storm-control shutter XML.
+
+Then add a fake illumination channel in HAL. This channel is not connected to a
+laser. Its digital output goes to the FW-1000/TGFW TRIG IN input.
+
+The filter wheel still stores a short ordered list of filter positions:
+
+   P0 2
+   P1 5
+   P2 1
+
+But the shutter XML decides when to send the TTL pulses that advance through
+that list.
+
+Example desired experiment:
+
+   Frames 0-99:    filter 2
+   Frame 100:      pulse fake FW trigger channel
+   Frames 101-199: filter 5
+   Frame 200:      pulse fake FW trigger channel
+   Frames 201-299: filter 1
+
+This gives arbitrary dwell times even though the wheel protocol table is short.
+
+
+Important off-by-one rule
+-------------------------
+
+Even if the first desired filter is already physically selected by the settings
+file or by a manual serial move, it should still be the first protocol entry.
+
+Example desired timeline:
+
+   Start at filter 2
+   Then move to filter 5
+   Then move to filter 1
+
+Use this protocol:
+
+   P0 2
+   P1 5
+   P2 1
+
+At film start, HAL sends:
+
+   G0
+
+This makes the wheel go to P0 and aligns the controller's internal protocol
+pointer with P0.
+
+Then:
+
+   Start:   P0 -> filter 2
+   Pulse 1: P1 -> filter 5
+   Pulse 2: P2 -> filter 1
+
+If P0 were set to 5 instead, then G0 would move the wheel to filter 5 at the
+start of the film, which would be wrong.
+
+
+Hardware XML setup outline
+--------------------------
+
+1. Add the filter wheel under the Tiger controller devices section.
+
+Example:
+
+   <filter_wheel>
+     <wheel type="int">0</wheel>
+     <maximum type="int">8</maximum>
+     <filters type="string">488,561,647,Empty</filters>
+     <sequence type="string">488,561,647</sequence>
+     <protocol_length type="int">8</protocol_length>
+     <restore_on_stop type="boolean">True</restore_on_stop>
+   </filter_wheel>
+
+The filters list maps names to positions by order:
+
+   488   -> 0
+   561   -> 1
+   647   -> 2
+   Empty -> 3
+
+The sequence can use these names or raw integer positions. With the mapping
+above, these are equivalent:
+
+   <sequence type="string">488,647,Empty</sequence>
+   <sequence type="string">0,2,3</sequence>
+
+This filters list is local to the Tiger hardware configuration. If the generic
+HAL filter wheel GUI also has a filters list, keep the two lists in the same
+order so the buttons and hardware sequence agree.
+
+2. Point the normal HAL filter wheel GUI to the Tiger functionality.
+
+Example:
+
+   <filter_wheel_fn type="string">tiger_controller.filter_wheel</filter_wheel_fn>
+
+3. Add a DAQ digital output task for the fake filter wheel trigger.
+
+Example:
+
+   <fw_trigger>
+     <do_task>
+       <source type="string">/Dev1/port0/line2</source>
+     </do_task>
+   </fw_trigger>
+
+4. Add a fake illumination channel that uses this digital output.
+
+Conceptual example:
+
+   <fw_trigger>
+     <gui_name type="string">FW Trigger</gui_name>
+     <color type="string">255,255,255</color>
+     <digital_modulation>
+       <hw_fn_name type="string">daq.fw_trigger.do_task</hw_fn_name>
+     </digital_modulation>
+   </fw_trigger>
+
+The fake illumination channel should not be connected to a laser. It only
+generates TTL pulses to advance the filter wheel.
+
+
+Shutter XML setup
+-----------------
+
+The shutter XML should pulse the fake FW Trigger channel only when the wheel
+should advance.
+
+Important practical points:
+
+1. Do not pulse the filter wheel every frame unless a cyclic every-frame
+   sequence is actually desired.
+
+2. Add blank frames after each pulse so the filter wheel has time to reach the
+   next position before useful exposure frames are acquired.
+
+3. The FW-1000 manual reports typical adjacent-filter switching around 60 ms
+   with default settings. The exact required blank time should be measured on
+   the real setup.
+
+4. The pulse must be long enough for the FW-1000/TGFW TRIG IN input to detect.
+   If necessary, use shutter XML oversampling to make a short, clean pulse.
+
+5. Test the off-by-one behavior with visible filter changes before running a
+   real experiment.
+
+
+Recommended test procedure
+--------------------------
+
+1. Load a simple protocol, such as:
+
+   P0 2
+   P1 5
+   P2 1
+
+2. Start with a short shutter file that sends only one or two FW trigger pulses.
+
+3. Confirm that film start is at the P0 filter.
+
+4. Confirm that the first pulse advances to P1.
+
+5. Confirm that the second pulse advances to P2.
+
+6. Add blank frames until the recorded frames are cleanly aligned with the
+   intended filters.
+
+7. Only then expand to the real experiment shutter sequence.
+
+
+Bottom line
+-----------
+
+The FW-1000/TGFW hardware protocol is short and cyclic: P0 through P7.
+
+For arbitrary non-cyclic timing, use the filter wheel protocol only as the
+ordered list of filters, and use the DAQ/shutter XML fake illumination channel
+to decide when the wheel advances.
+
+In other words:
+
+   Filter wheel protocol = what filter comes next.
+   Shutter XML / DAQ TTL pulse = when to move to the next filter.

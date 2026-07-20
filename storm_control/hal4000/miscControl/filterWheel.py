@@ -7,6 +7,7 @@ Hazen Babcock 06/17
 
 from PyQt5 import QtWidgets
 
+import storm_control.sc_library.halExceptions as halExceptions
 import storm_control.sc_library.parameters as params
 
 import storm_control.hal4000.halLib.halDialog as halDialog
@@ -14,6 +15,15 @@ import storm_control.hal4000.halLib.halMessage as halMessage
 import storm_control.hal4000.halLib.halModule as halModule
 
 import storm_control.hal4000.qtdesigner.filter_wheel_ui as filterWheelUi
+
+
+def filterNamesToPositions(filter_names):
+    filter_positions = {}
+    for i, filter_name in enumerate(filter_names):
+        if filter_name in filter_positions:
+            raise halExceptions.HardwareException("Duplicate filter wheel filter name '" + filter_name + "'.")
+        filter_positions[filter_name] = i
+    return filter_positions
 
 
 class FilterWheelView(halDialog.HalDialog):
@@ -37,8 +47,9 @@ class FilterWheelView(halDialog.HalDialog):
         layout = QtWidgets.QHBoxLayout(self.ui.filtersGroupBox)
         layout.setContentsMargins(1,1,1,1)
         layout.setSpacing(1)
-        filter_names = configuration.get("filters").split(",")
-        for name in filter_names:
+        self.filter_names = [name.strip() for name in configuration.get("filters").split(",")]
+        self.filter_positions = filterNamesToPositions(self.filter_names)
+        for name in self.filter_names:
             button = QtWidgets.QPushButton(name, self.ui.filtersGroupBox)
             button.setAutoExclusive(True)
             button.setCheckable(True)
@@ -52,12 +63,40 @@ class FilterWheelView(halDialog.HalDialog):
         
         self.parameters.add(params.ParameterSetString(description ="Current filter",
                                                       name = "current_filter",
-                                                      value = filter_names[0],
-                                                      allowed = filter_names))
+                                                      value = self.filter_names[0],
+                                                      allowed = self.filter_names))
+        self.parameters.add(params.ParameterString(description = "Film filter sequence",
+                                                  name = "sequence",
+                                                  value = configuration.get("sequence", "")))
         self.setEnabled(False)
 
     def getParameters(self):
         return self.parameters
+
+    def getSequencePositions(self):
+        sequence = self.parameters.get("sequence", "").strip()
+        if len(sequence) == 0:
+            return None
+
+        positions = []
+        for token in sequence.split(","):
+            token = token.strip()
+            if len(token) == 0:
+                raise halExceptions.HardwareException("Empty filter wheel sequence entry.")
+
+            if token in self.filter_positions:
+                position = self.filter_positions[token]
+            else:
+                try:
+                    position = int(token)
+                except ValueError:
+                    raise halExceptions.HardwareException("Unknown filter wheel sequence entry '" + token + "'.")
+
+            if (position < 0) or (position >= len(self.filter_names)):
+                raise halExceptions.HardwareException("Filter wheel sequence position {0:d} is out of range.".format(position))
+            positions.append(position)
+
+        return positions
     
     def handleClicked(self, boolean):
         for i, button in enumerate(self.buttons):
@@ -72,6 +111,7 @@ class FilterWheelView(halDialog.HalDialog):
     def newParameters(self, parameters):
         self.parameters = parameters
         if self.filter_fn is not None:
+            self.setProtocolSequence()
             self.setCurrentFilter()
 
     def setCurrentFilter(self):
@@ -82,7 +122,15 @@ class FilterWheelView(halDialog.HalDialog):
     def setFunctionality(self, filter_fn):
         self.filter_fn = filter_fn
         self.setEnabled(True)
+        self.setProtocolSequence()
         self.setCurrentFilter()
+
+    def setProtocolSequence(self):
+        positions = self.getSequencePositions()
+        if hasattr(self.filter_fn, "setProtocolSequence"):
+            self.filter_fn.setProtocolSequence(positions)
+        elif positions is not None:
+            raise halExceptions.HardwareException("Filter wheel functionality does not support film sequences.")
 
 
 class FilterWheel(halModule.HalModule):

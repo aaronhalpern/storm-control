@@ -45,9 +45,13 @@ def parseFilterSequence(settings):
     if not settings.has("sequence"):
         return None
 
+    sequence = settings.get("sequence").strip()
+    if len(sequence) == 0:
+        return None
+
     filter_names = parseFilterNames(settings)
     positions = []
-    for token in settings.get("sequence").split(","):
+    for token in sequence.split(","):
         token = token.strip()
         if token in filter_names:
             positions.append(filter_names[token])
