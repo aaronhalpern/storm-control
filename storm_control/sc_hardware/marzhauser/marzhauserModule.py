@@ -2,8 +2,32 @@
 """
 HAL module for controlling a Marzhauser stage.
 
+*** TEST VARIANT ***
+This is a copy of marzhauserModule.py with two robustness fixes applied to the
+position-reporting path so that a single lost/garbled/fragmented serial response
+can no longer permanently freeze the XY position readout:
+
+  Fix A - The 'querying' latch is now self-clearing. If a position query never
+          gets a parseable response, the latch re-arms after a few update ticks
+          instead of wedging forever. (MarzhauserStageFunctionality)
+
+  Fix B - The polling thread can no longer die on a serial hiccup. Its loop body
+          is wrapped in try/except, and the device mutex is always released.
+          (MarzhauserPollingThread)
+
+Class names are identical to marzhauserModule.py, so to test simply point the
+config XML's <module_name> at:
+    storm_control.sc_hardware.marzhauser.marzhauserModuleFix
+and leave <class_name> as MarzhauserStage. Switch back by restoring the original
+<module_name>.
+
+Only MarzhauserStageFunctionality (Fix A) and MarzhauserPollingThread (Fix B)
+differ from the original. The other classes are unchanged.
+
 Hazen 04/17
 """
+
+import traceback
 
 from PyQt5 import QtCore
 
@@ -25,6 +49,10 @@ class MarzhauserStageFunctionality(stageModule.StageFunctionality):
         super().__init__(**kwds)
         self.querying = False
 
+        # Fix A: count consecutive update ticks spent waiting on a response so
+        # a single missed/garbled reply cannot latch querying True forever.
+        self.query_misses = 0
+
         # Each time this timer fires we'll 'query' the stage for it's
         # current position.
         self.updateTimer = QtCore.QTimer()
@@ -35,7 +63,7 @@ class MarzhauserStageFunctionality(stageModule.StageFunctionality):
         # Connect to our own stagePosition signal in order to store
         # the current position.
         self.stagePosition.connect(self.handleStagePosition)
-        
+
         # This thread will poll the serial port for responses from
         # the stage to the commands we're sending.
         self.polling_thread = MarzhauserPollingThread(device_mutex = self.device_mutex,
@@ -48,6 +76,7 @@ class MarzhauserStageFunctionality(stageModule.StageFunctionality):
     def handleStagePosition(self, pos_dict):
         self.pos_dict = pos_dict
         self.querying = False
+        self.query_misses = 0
 
     def handleUpdateTimer(self):
         """
@@ -58,9 +87,19 @@ class MarzhauserStageFunctionality(stageModule.StageFunctionality):
         # position update requests. If there is already one in process there
         # is no point in starting another one.
         #
+        # Fix A: if we are still 'querying' it means a previous position query
+        # never produced a parseable response. Re-arm after a few ticks so the
+        # readout self-heals instead of freezing forever.
+        #
         if not self.querying:
             self.querying = True
+            self.query_misses = 0
             self.mustRun(task = self.stage.position)
+        else:
+            self.query_misses += 1
+            if self.query_misses >= 3:   # ~3 * update_interval (500ms) = ~1.5s
+                self.querying = False
+                self.query_misses = 0
 
     def wait(self):
         self.updateTimer.stop()
@@ -70,7 +109,7 @@ class MarzhauserStageFunctionality(stageModule.StageFunctionality):
 
 class MarzhauserPollingThread(QtCore.QThread):
     """
-    Handles polling the Marzhauser stage for responses to 
+    Handles polling the Marzhauser stage for responses to
     serial commands.
     """
     def __init__(self,
@@ -83,50 +122,62 @@ class MarzhauserPollingThread(QtCore.QThread):
         super().__init__(**kwds)
         self.device_mutex = device_mutex
         self.is_moving_signal = is_moving_signal
-        self.sleep_time = sleep_time         
+        self.sleep_time = sleep_time
         self.stage = stage
         self.stage_position_signal = stage_position_signal
 
     def run(self):
         self.running = True
         while(self.running):
-            self.device_mutex.lock()
-            responses = self.stage.readline()
-            self.device_mutex.unlock()
-            
-            # Parse response. The expectation is that it is one of two things:
-            #
-            # (1) A status string like "#@--" that indicates that the stage
-            #     is or is not moving (statusaxis).
-            #
-            # (2) The current position "X.XX Y.YY ..".
-            #
 
-            for resp in responses.split("\r"):
+            # Fix B: a serial hiccup (SerialException, decode error, etc.) must
+            # not be allowed to kill this thread, otherwise position reporting
+            # stops permanently even though command writes keep working. Wrap
+            # the whole loop body and always release the device mutex.
+            try:
+                self.device_mutex.lock()
+                try:
+                    responses = self.stage.readline()
+                finally:
+                    self.device_mutex.unlock()
 
-                # The response was no response.
-                if (len(resp) == 0):
-                    continue
-                
-                # Check for 'statusaxis' response form.
-                elif (len(resp) == 5):
-                    if (resp[:2] == "@@"):
-                        self.is_moving_signal.emit(False)
+                # Parse response. The expectation is that it is one of two things:
+                #
+                # (1) A status string like "#@--" that indicates that the stage
+                #     is or is not moving (statusaxis).
+                #
+                # (2) The current position "X.XX Y.YY ..".
+                #
+
+                for resp in responses.split("\r"):
+
+                    # The response was no response.
+                    if (len(resp) == 0):
+                        continue
+
+                    # Check for 'statusaxis' response form.
+                    elif (len(resp) == 5):
+                        if (resp[:2] == "@@"):
+                            self.is_moving_signal.emit(False)
+                        else:
+                            self.is_moving_signal.emit(True)
+
+                    # Otherwise try and parse as a position.
                     else:
-                        self.is_moving_signal.emit(True)
+                        resp = resp.split(" ")
+                        if (len(resp) >= 2):
+                            are_floats = True
+                            try:
+                                [sx, sy] = map(float, resp[:2])
+                            except ValueError:
+                                are_floats = False
+                            if are_floats:
+                                self.stage_position_signal.emit({"x" : sx * self.stage.unit_to_um,
+                                                                 "y" : sy * self.stage.unit_to_um})
 
-                # Otherwise try and parse as a position.
-                else:
-                    resp = resp.split(" ")
-                    if (len(resp) >= 2):
-                        are_floats = True
-                        try:
-                            [sx, sy] = map(float, resp[:2])
-                        except ValueError:
-                            are_floats = False
-                        if are_floats:
-                            self.stage_position_signal.emit({"x" : sx * self.stage.unit_to_um,
-                                                             "y" : sy * self.stage.unit_to_um})
+            except Exception:
+                # Log and keep going so position reporting self-heals.
+                print(traceback.format_exc())
 
             # Sleep for ~ x milliseconds.
             self.msleep(self.sleep_time)
@@ -137,14 +188,14 @@ class MarzhauserPollingThread(QtCore.QThread):
     def stopPolling(self):
         self.running = False
         self.wait()
-   
+
 class MarzhauserStageFunctionalityNF(stageModule.StageFunctionalityNF):
     """
     Make a class where polling behavior is turned off for the Marzhauser stage
     This is to limit polling in case of a COM port problem
     Use the StageModule.StageFunctionalityNF but turn off the position timer
-    """           
-    
+    """
+
     def __init__(self, **kwds):
         super().__init__(**kwds)
         self.getInitialPosition()
@@ -153,17 +204,17 @@ class MarzhauserStageFunctionalityNF(stageModule.StageFunctionalityNF):
         # FIXME: These are just the values from the LUDL stage.
         time_estimate = math.sqrt(dx*dx + dy*dy)/10000.0 + 1.0
         #print("> stage move time estimate is {0:.3f} seconds".format(time_estimate))
-        return time_estimate   
-    
+        return time_estimate
+
     def position(self):
         """
         for non position polling marzhauser, just return the position dictionary
         """
         return self.pos_dict
-    
+
     def getInitialPosition(self):
         """
-        For non polling marzhauser implementation 
+        For non polling marzhauser implementation
         Call at startup to get the initial pos_dict
         This may not be the most robust way of doing it
         """
@@ -176,19 +227,19 @@ class MarzhauserStageFunctionalityNF(stageModule.StageFunctionalityNF):
         self.pos_dict = {}
         self.pos_dict["x"] = pos[0] # lets hope their are only two return values and they came back in x,y order
         self.pos_dict["y"] = pos[1]
-        
+
     def goRelative(self, dx, dy):
         """
         Usually used by the stage GUI, units are microns.
         """
         self.maybeRun(task = self.stage.goRelative,
                       args = [dx, dy])
-                      
+
         # Pretend we already got there..
         # Update the pos_dict in case the user is using the stage GUI
         self.pos_dict["x"] = self.pos_dict["x"] - dx
         self.pos_dict["y"] = self.pos_dict["y"] - dy
-        
+
     def zero(self):
         self.mustRun(task = self.stage.zero)
         self.pos_dict["x"] = 0
@@ -201,7 +252,7 @@ class MarzhauserStage(stageModule.StageModule):
 
         configuration = module_params.get("configuration")
         polling = configuration.get("polling", default = True)
-        
+
         self.stage = marzhauser.MarzhauserRS232(baudrate = configuration.get("baudrate"),
                                                 port = configuration.get("port"))
         if self.stage.getStatus():
