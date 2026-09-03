@@ -2,20 +2,31 @@
 """
 Generic Lumencor laser control via HTTP (ethernet connection).
 
-Bogdan 3/19
 """
-import urllib.request
 import traceback
+import urllib3
+import json
+
+# define the PoolManager 
+http = urllib3.PoolManager()
+
 def lumencor_httpcommand(command = 'GET IP',ip = '192.168.201.200'):
     """
     Sends commands to the lumencor system via http.
     Plese find commands here:
     http://lumencor.com/wp-content/uploads/sites/11/2019/01/57-10018.pdf
     """
+    
     command_full = r'http://'+ip+'/service/?command='+command.replace(' ','%20')
-    with urllib.request.urlopen(command_full) as response:
-        message = eval(response.read()) # the default is conveniently JSON so eval creates dictionary
+        
+    response = http.request('GET', command_full, timeout=0.5, retries=2) # what to set timeout to?
+    #message = eval(resp.data)
+    message = json.loads(response.data.decode('utf-8'))
     return message
+        
+    #except Exception as e:
+    #    print(f"Error in lumencor_httpcommand: {e}")
+    #    return None
 
 class LumencorLaser(object):
     """
@@ -76,7 +87,7 @@ class LumencorLaser(object):
         else:
             ttl_enable = '0'
         self.message = lumencor_httpcommand(command = 'SET TTLENABLE '+ttl_enable,ip=self.ip)
-        
+       
     def getLaserOnOff(self):
         """
         Return True/False the laser is on/off.
@@ -180,4 +191,3 @@ if (__name__ == "__main__"):
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 #
-
