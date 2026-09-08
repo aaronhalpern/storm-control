@@ -147,8 +147,18 @@ class ValveChain(QtWidgets.QWidget):
     # Update valve status display with the current status each valve in the chain
     # ------------------------------------------------------------------------------------
     def pollValveStatus(self):
+        # This runs on every QTimer tick (every poll_time ms, indefinitely,
+        # including unattended overnight runs). getStatus() talks to hardware
+        # over serial, so any transient COM issue the driver doesn't fully
+        # absorb must not escape here: PyQt5 has no way to safely unwind a
+        # Python exception raised inside a slot invoked from a C++ signal, so
+        # an uncaught exception in this loop aborts the entire application
+        # rather than just failing one poll.
         for valve_ID in range(self.num_valves):
-            self.valve_widgets[valve_ID].setStatus(self.valve_chain.getStatus(valve_ID))
+            try:
+                self.valve_widgets[valve_ID].setStatus(self.valve_chain.getStatus(valve_ID))
+            except Exception as error:
+                print("Error polling status of valve " + str(valve_ID) + ": " + str(error))
 
     # ------------------------------------------------------------------------------------
     # Change port status based on external command

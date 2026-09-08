@@ -64,11 +64,18 @@ class GenericPumpControl(QtWidgets.QWidget):
     # Poll Pump Status
     # ----------------------------------------------------------------------------------------
     def pollPumpStatus(self):
-        self.updateStatus(self.pump.getStatus())
+        # Runs on every QTimer tick indefinitely, including unattended overnight
+        # runs; see the equivalent guard in valveChain.pollValveStatus for why
+        # an uncaught exception here would otherwise abort the whole app rather
+        # than just failing one poll
+        try:
+            self.updateStatus(self.pump.getStatus())
+        except Exception as error:
+            print("Error polling pump status: " + str(error))
 
     # ------------------------------------------------------------------------------------
     # Change pump based on sent command: [direction, speed]
-    # ------------------------------------------------------------------------------------          
+    # ------------------------------------------------------------------------------------
     def receiveCommand(self, command):
         pass
 
@@ -435,8 +442,12 @@ class SyringePumpControl(GenericPumpControl):
     # Poll Pump Status
     # ----------------------------------------------------------------------------------------
     def pollPumpStatus(self):
-        self.updateStatus(self.pump.getStatus())
-    
+        # See GenericPumpControl.pollPumpStatus for why this must not raise
+        try:
+            self.updateStatus(self.pump.getStatus())
+        except Exception as error:
+            print("Error polling pump status: " + str(error))
+
     # ----------------------------------------------------------------------------------------
     # Handle Change Flow Request
     # ----------------------------------------------------------------------------------------

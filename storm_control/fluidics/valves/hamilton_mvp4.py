@@ -153,32 +153,53 @@ class AValveChain(AbstractValve):
         # Check if the valve_ID valve is initialized
         if not self.isValidValve(valve_ID):
             return ("", False, "")
-        
-        # Prepend address of provided valve (0=a, 1=b, ...) 
+
+        # Prepend address of provided valve (0=a, 1=b, ...)
         message = "/" + self.valve_names[valve_ID] + message
+
+        # Discard any bytes left over from a previous truncated/corrupted response.
+        # Without this, a single dropped or late byte desynchronizes every future
+        # write/read pair (each read would return the tail of the previous frame),
+        # which otherwise never self-corrects and looks like the valve "died".
+        self.flushInputBuffer()
 
         # Write message and read response
         self.write(message)
         actual_response = self.read()
-        
-        # Handle no response
-        if len(actual_response) < 2:
+
+        # Handle no/short response (status byte lives at index 2, so anything
+        # shorter than that cannot be parsed; this also covers the timeout case
+        # where readline() returns b"" because nothing arrived in time)
+        if len(actual_response) < 3:
             return (default, False, actual_response)
-        
+
         # Handle status value
         status = chr(actual_response[2])
-                
+
         # Extract data values, if provided
         data_start = 3
         data_end = actual_response.find('\x03'.encode())
 
+        # No end-of-text marker found means the frame was truncated (e.g. the
+        # serial read timed out mid-response); treat it as a failed read rather
+        # than slicing on a -1 index.
+        if data_end == -1:
+            return (default, False, actual_response)
+
         if data_start == data_end:
             return (default, True, actual_response)
         else:
-            data = actual_response[data_start:data_end].decode()
+            try:
+                data = actual_response[data_start:data_end].decode()
+            except UnicodeDecodeError:
+                # Corrupted bytes on the line (noise, mid-frame desync); report
+                # as a failed read instead of raising out of the poll loop.
+                if self.verbose:
+                    print("Could not decode valve response: " + str(actual_response))
+                return (default, False, actual_response)
             # Parse provided dictionary with data
             return_value = dictionary.get(data, default)
-            
+
             if return_value == default:
                 return (default, False, actual_response)
             else:
@@ -233,10 +254,24 @@ class AValveChain(AbstractValve):
         # Create moving message
         message = "/" + self.valve_names[valve_ID] + "Q\r"
 
+        # See inquireAndRespond() for why this is needed before every write
+        self.flushInputBuffer()
+
         # Write message and read response
         self.write(message)
         actual_response = self.read()
-            
+
+        # This call bypasses inquireAndRespond() (no dictionary lookup needed),
+        # so it needs its own guard against the short/empty response case
+        # (dropped byte, read timeout, closed COM port, etc). Report movement
+        # as finished rather than raising, since this is polled continuously
+        # by the GUI and an unhandled exception here would otherwise propagate
+        # out of the Qt timer callback and take down the whole application.
+        if len(actual_response) < 3:
+            if self.verbose:
+                print("No valid response when polling movement status of valve " + str(valve_ID))
+            return True
+
         # Handle status value
         status = chr(actual_response[2])
         if status == "@":
@@ -280,11 +315,29 @@ class AValveChain(AbstractValve):
                 "4 ports": 4}.get(configuration_string, 0)
     
     # ------------------------------------------------------------------------------------
+    # Discard Stale Bytes Waiting in the Input Buffer
+    # ------------------------------------------------------------------------------------
+    def flushInputBuffer(self):
+        try:
+            self.serial.reset_input_buffer()
+        except serial.SerialException as error:
+            # Port is already gone; read()/write() will surface the same error
+            if self.verbose:
+                print("Could not reset valve COM port input buffer: " + str(error))
+
+    # ------------------------------------------------------------------------------------
     # Read from Serial Port
     # ------------------------------------------------------------------------------------
     def read(self):
        # response = self.serial.readline().decode()
-        response = self.serial.readline()
+        try:
+            response = self.serial.readline()
+        except serial.SerialException as error:
+            # e.g. the COM port was closed/disconnected (cable, USB power
+            # management, driver reset); return an empty response so callers
+            # treat this exactly like a read timeout instead of crashing
+            print("Error reading from valve COM port: " + str(error))
+            response = b""
 
         if self.verbose:
             print("Received: " + str((response, "")))
@@ -344,7 +397,12 @@ class AValveChain(AbstractValve):
     # Write to Serial Port
     # ------------------------------------------------------------------------------------    
     def write(self, message):
-        self.serial.write(message.encode())
+        try:
+            self.serial.write(message.encode())
+        except serial.SerialException as error:
+            # Same rationale as read(): surface it rather than raising, since
+            # this is called from the GUI polling loop as well as manual commands
+            print("Error writing to valve COM port: " + str(error))
         if self.verbose:
             print("Wrote: " + message[:-1]) # Display all but final carriage return
 
