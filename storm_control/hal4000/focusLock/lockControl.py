@@ -65,6 +65,8 @@ class LockControl(QtCore.QObject):
                     slb_dict = {"scan_range" : tcp_message.getData("scan_range")}
                     if tcp_message.getData("z_center") is not None:
                         slb_dict["z_center"] = tcp_message.getData("z_center")
+                    if tcp_message.getData("scan_step") is not None:
+                        slb_dict["scan_step"] = tcp_message.getData("scan_step")
                     self.startLockBehavior("scan", slb_dict)
 
                 # Otherwise just return that we were not successful.

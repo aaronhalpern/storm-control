@@ -326,9 +326,10 @@ class DACheckFocus(DaveAction):
         self.action_type = "hal"
         self.num_focus_checks = 10 # A default number of focus checks
         self.focus_scan = False # The default is to not scan for focus
-        self.scan_range = False # The range to scan for focus in microns
-        self.z_center = None # The z position to scan around
-        
+        self.scan_range = 30 # The +/- range to scan for focus in microns. Caution, if False scan the full range.
+        self.z_center = None # The z position to scan around, if None it should use last_good_z, but check this.
+        self.scan_step = 0.05 # The default scan step
+      
     ## createETree
     #
     # @param dictionary A dictionary.
@@ -382,18 +383,27 @@ class DACheckFocus(DaveAction):
         if node.find("focus_scan") is not None:
             self.focus_scan = True
 
-        # Add range if provided
+        # Add range if provided (False triggers a full-range scan)
         if node.find("scan_range") is not None:
-            self.scan_range = float(node.find("scan_range").text)
+            text = node.find("scan_range").text.strip()
+            if text.lower() == "false":
+                self.scan_range = False
+            else:
+                self.scan_range = float(text)
 
         # Add z_center if provided
         if node.find("z_center") is not None:
             self.z_center = float(node.find("z_center").text)
 
+        # Add scan_step if provided
+        if node.find("scan_step") is not None:
+            self.scan_step = float(node.find("scan_step").text)
+      
         message_data = {"num_focus_checks": self.num_focus_checks,
                         "focus_scan": self.focus_scan,
                         "scan_range": self.scan_range,
-                        "z_center": self.z_center
+                        "z_center": self.z_center,
+                        "scan_step": self.scan_step
                         }
         
         self.message = tcpMessage.TCPMessage(message_type = "Check Focus Lock",
